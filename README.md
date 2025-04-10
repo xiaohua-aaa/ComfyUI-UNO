@@ -12,4 +12,4 @@ Now only flux-dev is supported
 open offload need 27GB VRAM
 
 
-[show](/asset/show.png)
+![show](./asset/show.png)
