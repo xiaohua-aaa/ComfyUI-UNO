@@ -46,7 +46,7 @@ def custom_set_lora(
     return model
 
 # 添加自定义加载模型的函数
-def custom_load_flux_model(model_path, device, model_type="flux-dev", offload=False, lora_rank=512, lora_path=None):
+def custom_load_flux_model(model_path, device, model_type="flux-dev", lora_rank=512, lora_path=None):
     """
     从指定路径加载 Flux 模型
     """
@@ -198,8 +198,8 @@ class UNOModelLoader:
                     self.model_type = model_type
                     
                     # 加载 CLIP 和 T5 编码器
-                    self.clip = custom_load_clip(self.device)
-                    self.t5 = custom_load_t5(self.device, max_length=512)
+                    self.clip = custom_load_clip(device="cpu" if offload else self.device)
+                    self.t5 = custom_load_t5(device="cpu" if offload else self.device, max_length=512)
                     
                     # 加载自定义模型
                     self.ae = custom_load_ae(ae_path, device="cpu" if offload else self.device, model_type=model_type)
@@ -219,6 +219,7 @@ class UNOModelLoader:
                 flux_path=flux_model_path,
                 ae_path=ae_model_path,
                 offload=offload,
+                lora_rank=lora_rank,
                 lora_path=lora_model_path,
             )
             
