@@ -207,7 +207,6 @@ class UNOModelLoader:
                         flux_path, 
                         device="cpu" if offload else self.device, 
                         model_type=model_type,
-                        offload=offload,
                         lora_rank=lora_rank,
                         lora_path=lora_path
                     )
