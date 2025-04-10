@@ -11,5 +11,7 @@ https://github.com/bytedance/UNO comfyui
 Now only flux-dev is supported
 open offload need 27GB VRAM
 
+clip and t5 will autodownload
+
 
 ![show](./asset/show.png)
