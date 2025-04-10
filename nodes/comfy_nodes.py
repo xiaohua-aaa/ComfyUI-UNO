@@ -14,36 +14,9 @@ import folder_paths
 from uno.flux.model import Flux
 from uno.flux.modules.conditioner import HFEmbedder
 from uno.flux.pipeline import UNOPipeline, preprocess_ref
-from uno.flux.util import configs, load_ae, load_flow_model, set_lora, get_lora_rank
+from uno.flux.util import configs, set_lora
 from uno.flux.modules.layers import DoubleStreamBlockLoraProcessor, SingleStreamBlockLoraProcessor, DoubleStreamBlockProcessor, SingleStreamBlockProcessor
 
-
-def custom_set_lora(
-    model: Flux,
-    lora_rank: int,
-    double_blocks_indices: list[int] | None = None,
-    single_blocks_indices: list[int] | None = None,
-    device: str | torch.device = "cpu",
-) -> Flux:
-    double_blocks_indices = list(range(model.params.depth)) if double_blocks_indices is None else double_blocks_indices
-    single_blocks_indices = list(range(model.params.depth_single_blocks)) if single_blocks_indices is None \
-                            else single_blocks_indices
-    
-    lora_attn_procs = {}
-    with torch.device(device):
-        for name, attn_processor in  model.attn_processors.items():
-            match = re.search(r'\.(\d+)\.', name)
-            if match:
-                layer_index = int(match.group(1))
-
-            if name.startswith("double_blocks") and layer_index in double_blocks_indices:
-                lora_attn_procs[name] = DoubleStreamBlockLoraProcessor(dim=model.params.hidden_size, rank=lora_rank)
-            elif name.startswith("single_blocks") and layer_index in single_blocks_indices:
-                lora_attn_procs[name] = SingleStreamBlockLoraProcessor(dim=model.params.hidden_size, rank=lora_rank)
-            else:
-                lora_attn_procs[name] = attn_processor
-    model.set_attn_processor(lora_attn_procs)
-    return model
 
 # 添加自定义加载模型的函数
 def custom_load_flux_model(model_path, device, model_type="flux-dev", lora_rank=512, lora_path=None):
@@ -281,8 +254,6 @@ class UNOGenerate:
                     if ref_tensor.dim() == 4:  # [batch, height, width, channels]
                         for i in range(ref_tensor.shape[0]):
                             img = ref_tensor[i].cpu().numpy()
-                            # Assume ComfyUI range is [-1, 1], convert to [0, 1]
-                            img = (img + 1.0) / 2.0
                             ref_image_pil = Image.fromarray((img * 255).astype(np.uint8))
                             # Determine reference size based on number of reference images
                             ref_size = 512 if len([t for t in ref_tensors if t is not None]) <= 1 else 320
@@ -290,8 +261,6 @@ class UNOGenerate:
                             ref_imgs.append(ref_image_pil)
                     else:  # [height, width, channels]
                         img = ref_tensor.cpu().numpy()
-                        # Assume ComfyUI range is [-1, 1], convert to [0, 1]
-                        img = (img + 1.0) / 2.0
                         ref_image_pil = Image.fromarray((img * 255).astype(np.uint8))
                         # Determine reference size based on number of reference images
                         ref_size = 512 if len([t for t in ref_tensors if t is not None]) <= 1 else 320
@@ -299,7 +268,6 @@ class UNOGenerate:
                         ref_imgs.append(ref_image_pil)
                 elif isinstance(ref_tensor, np.ndarray):
                     # Assume ComfyUI range is [-1, 1], convert to [0, 1]
-                    img = (ref_tensor + 1.0) / 2.0
                     ref_image_pil = Image.fromarray((img * 255).astype(np.uint8))
                     # Determine reference size based on number of reference images
                     ref_size = 512 if len([t for t in ref_tensors if t is not None]) <= 1 else 320
@@ -342,8 +310,6 @@ class UNOGenerate:
             if image.dim() == 3:  # [height, width, channels]
                 image = image.unsqueeze(0)  # Add batch dimension to make it [1, height, width, channels]
             
-            # Scale to [-1, 1] range as expected by ComfyUI
-            image = image * 2.0 - 1.0
             
             return (image,)
         except Exception as e:
