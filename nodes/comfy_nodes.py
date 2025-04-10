@@ -1,248 +1,358 @@
 import os
-import sys
 import torch
-import folder_paths
-from PIL import Image
 import numpy as np
+import re
+from PIL import Image
+from typing import Literal
 
-# Add the parent directory to the Python path so we can import from easycontrol
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from comfy.model_management import get_torch_device
+import folder_paths
 
-from diffusers.pipelines.flux.pipeline_output import FluxPipelineOutput
-from easycontrol.pipeline import FluxPipeline
-from easycontrol.transformer_flux import FluxTransformer2DModel
-from easycontrol.lora_helper import set_single_lora, set_multi_lora, unset_lora
-from huggingface_hub import login
-
-from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
-from transformers import BitsAndBytesConfig as TransformersBitsAndBytesConfig
-
-from transformers import T5EncoderModel
+from uno.flux.model import Flux
+from uno.flux.modules.conditioner import HFEmbedder
+from uno.flux.pipeline import UNOPipeline, preprocess_ref
+from uno.flux.util import configs, load_ae, load_flow_model, set_lora, get_lora_rank
+from uno.flux.modules.layers import DoubleStreamBlockLoraProcessor, SingleStreamBlockLoraProcessor, DoubleStreamBlockProcessor, SingleStreamBlockProcessor
 
 
-class EasyControlLoadFlux:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "hf_token": ("STRING", {"default": "", "multiline": True}),
-            },
-            "optional": {"load_8bit": ("BOOLEAN", {"default": True}), "cpu_offload": ("BOOLEAN", {"default": True})}
-        }
+def custom_set_lora(
+    model: Flux,
+    lora_rank: int,
+    double_blocks_indices: list[int] | None = None,
+    single_blocks_indices: list[int] | None = None,
+    device: str | torch.device = "cpu",
+) -> Flux:
+    double_blocks_indices = list(range(model.params.depth)) if double_blocks_indices is None else double_blocks_indices
+    single_blocks_indices = list(range(model.params.depth_single_blocks)) if single_blocks_indices is None \
+                            else single_blocks_indices
     
-    RETURN_TYPES = ("EASYCONTROL_PIPE", "EASYCONTROL_TRANSFORMER")
-    FUNCTION = "load_model"
-    CATEGORY = "EasyControl"
+    lora_attn_procs = {}
+    with torch.device(device):
+        for name, attn_processor in  model.attn_processors.items():
+            match = re.search(r'\.(\d+)\.', name)
+            if match:
+                layer_index = int(match.group(1))
 
-    def load_model(self, load_8bit, cpu_offload, hf_token=None):
-        login(token=hf_token)
-        base_path = "black-forest-labs/FLUX.1-dev"
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        cache_dir = folder_paths.get_folder_paths("diffusers")[0]
-        print(cache_dir)
-        if load_8bit:
-            quant_config_t5 = TransformersBitsAndBytesConfig(load_in_8bit=True,)
-            quant_config = DiffusersBitsAndBytesConfig(load_in_8bit=True,)
+            if name.startswith("double_blocks") and layer_index in double_blocks_indices:
+                lora_attn_procs[name] = DoubleStreamBlockLoraProcessor(dim=model.params.hidden_size, rank=lora_rank)
+            elif name.startswith("single_blocks") and layer_index in single_blocks_indices:
+                lora_attn_procs[name] = SingleStreamBlockLoraProcessor(dim=model.params.hidden_size, rank=lora_rank)
+            else:
+                lora_attn_procs[name] = attn_processor
+    model.set_attn_processor(lora_attn_procs)
+    return model
+
+# 添加自定义加载模型的函数
+def custom_load_flux_model(model_path, device, model_type="flux-dev", offload=False, lora_rank=512, lora_path=None):
+    """
+    从指定路径加载 Flux 模型
+    """
+    from uno.flux.model import Flux
+    from uno.flux.util import load_model
+    
+    # 获取对应模型类型的参数
+    params = configs[model_type].params
+    
+    # 初始化模型
+    with torch.device("meta" if model_path is not None else device):
+        model = Flux(params)
+    
+    # 如果有lora，设置 LoRA 层
+    if os.path.exists(lora_path):
+        print(f"Using only_lora mode with rank: {lora_rank}")
+        model = set_lora(model, lora_rank, device="meta" if model_path is not None else device)
+    
+    # 加载模型权重
+    if model_path is not None:
+        print(f"Loading Flux model from {model_path}")
+        if model_path.endswith('safetensors'):
+            from safetensors.torch import load_file as load_sft
+            sd = load_sft(model_path, device=str(device))
         else:
-            quant_config_t5 = None
-            quant_config = None
-            
-        text_encoder_2 = T5EncoderModel.from_pretrained(
-            base_path,
-            subfolder="text_encoder_2",
-            quantization_config=quant_config_t5,
-            torch_dtype=torch.bfloat16,
-            cache_dir=cache_dir,
-        )
-        transformer = FluxTransformer2DModel.from_pretrained(
-            base_path, 
-            subfolder="transformer",
-            torch_dtype=torch.bfloat16, 
-            device=device,
-            cache_dir=cache_dir,
-            quantization_config=quant_config,
-        )
+            sd = load_model(model_path, device=str(device))
         
-        pipe = FluxPipeline.from_pretrained(base_path, transformer=transformer, text_encoder_2=text_encoder_2, torch_dtype=torch.bfloat16, device=device, cache_dir=cache_dir)
+        # 检查是否有单独的 LoRA 文件
+        if os.path.exists(lora_path):
+            print(f"Found LoRA weights at {lora_path}, loading...")
+            if lora_path.endswith('safetensors'):
+                from safetensors.torch import load_file as load_sft
+                lora_sd = load_sft(lora_path, device=str(device))
+            else:
+                lora_sd = torch.load(lora_path, map_location='cpu')
+            # 合并 LoRA 权重
+            sd.update(lora_sd)
         
-        if cpu_offload:
-            pipe.enable_sequential_cpu_offload()
+        missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
+        if len(missing) > 0:
+            print(f"Missing keys: {len(missing)}")
+        if len(unexpected) > 0:
+            print(f"Unexpected keys: {len(unexpected)}")
+        
+        # 转移到目标设备
+        model = model.to(str(device)).to(torch.bfloat16)
+    return model
+
+def custom_load_ae(ae_path, device, model_type="flux-dev"):
+    """
+    从指定路径加载自编码器
+    """
+    from uno.flux.modules.autoencoder import AutoEncoder
+    from uno.flux.util import load_model
+    
+    # 获取对应模型类型的自编码器参数
+    ae_params = configs[model_type].ae_params
+    
+    # 初始化自编码器
+    with torch.device("meta" if ae_path is not None else device):
+        ae = AutoEncoder(ae_params)
+    
+    # 加载自编码器权重
+    if ae_path is not None:
+        print(f"Loading AutoEncoder from {ae_path}")
+        if ae_path.endswith('safetensors'):
+            from safetensors.torch import load_file as load_sft
+            sd = load_sft(ae_path, device=str(device))
         else:
-            pipe.to(device)
+            sd = torch.load(ae_path, map_location=str(device))
+        missing, unexpected = ae.load_state_dict(sd, strict=False, assign=True)
+        if len(missing) > 0:
+            print(f"Missing keys: {len(missing)}")
+        if len(unexpected) > 0:
+            print(f"Unexpected keys: {len(unexpected)}")
         
-        return (pipe, transformer)
+        # 转移到目标设备
+        ae = ae.to(str(device))
+    return ae
 
-class EasyControlLoadLora:
+def custom_load_t5(device: str | torch.device = "cuda", max_length: int = 512) -> HFEmbedder:
+    # max length 64, 128, 256 and 512 should work (if your sequence is short enough)
+    version = "xlabs-ai/xflux_text_encoders"
+    cache_dir = folder_paths.get_folder_paths("clip")[0]
+    return HFEmbedder(version, max_length=max_length, torch_dtype=torch.bfloat16).to(device)
+
+def custom_load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
+    version = "openai/clip-vit-large-patch14"
+    cache_dir = folder_paths.get_folder_paths("clip")[0]
+    return HFEmbedder(version, max_length=77, torch_dtype=torch.bfloat16, cache_dir=cache_dir).to(device)
+
+
+
+class UNOModelLoader:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "UNO_MODEL"
+        self.loaded_model = None
+
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "transformer": ("EASYCONTROL_TRANSFORMER", ),
-                "lora_name": (folder_paths.get_filename_list("loras"), ),
-                "lora_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "cond_size": ("INT", {"default": 512, "min": 256, "max": 1024, "step": 64}),
-            },
-        }
-    
-    RETURN_TYPES = ("EASYCONTROL_TRANSFORMER",)
-    FUNCTION = "load_lora"
-    CATEGORY = "EasyControl"
-
-    def load_lora(self, transformer, lora_name, lora_weight, cond_size):
-        lora_path = folder_paths.get_full_path("loras", lora_name)
-        set_single_lora(transformer, lora_path, lora_weights=[lora_weight], cond_size=cond_size)
-        return (transformer,)
-
-
-class EasyControlLoadMultiLora:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "transformer": ("EASYCONTROL_TRANSFORMER", ),
-                "lora_name1": (folder_paths.get_filename_list("loras"), ),
-                "lora_weight1": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "lora_name2": (folder_paths.get_filename_list("loras"), ),
-                "lora_weight2": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "cond_size": ("INT", {"default": 512, "min": 256, "max": 1024, "step": 64}),
-            },
-        }
-    
-    RETURN_TYPES = ("EASYCONTROL_TRANSFORMER",)
-    FUNCTION = "load_multi_lora"
-    CATEGORY = "EasyControl"
-
-    def load_multi_lora(self, transformer, lora_name1, lora_weight1, lora_name2, lora_weight2, cond_size):
-        lora_path1 = folder_paths.get_full_path("loras", lora_name1)
-        lora_path2 = folder_paths.get_full_path("loras", lora_name2)
+        # 获取 unet 模型列表和 vae 模型列表
+        model_paths = folder_paths.get_filename_list("unet")
+        vae_paths = folder_paths.get_filename_list("vae")
         
-        set_multi_lora(
-            transformer, 
-            [lora_path1, lora_path2], 
-            lora_weights=[[lora_weight1], [lora_weight2]], 
-            cond_size=cond_size
-        )
-        return (transformer,)
-
-class EasyControlGenerate:
-    @classmethod
-    def INPUT_TYPES(cls):
+        # 增加 LoRA 模型选项
+        lora_paths = folder_paths.get_filename_list("loras")
+        
         return {
             "required": {
-                "pipe": ("EASYCONTROL_PIPE", ),
-                "transformer": ("EASYCONTROL_TRANSFORMER", ),
-                "prompt": ("STRING", {"multiline": True}),
-                "prompt_2": ("STRING", {"multiline": True, "default": ""}),
-                "height": ("INT", {"default": 768, "min": 256, "max": 2048, "step": 64}),
-                "width": ("INT", {"default": 1024, "min": 256, "max": 2048, "step": 64}),
-                "guidance_scale": ("FLOAT", {"default": 3.5, "min": 0.0, "max": 10.0, "step": 0.1}),
-                "num_inference_steps": ("INT", {"default": 25, "min": 1, "max": 100, "step": 1}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "cond_size": ("INT", {"default": 512, "min": 256, "max": 1024, "step": 64}),
-                "use_zero_init": ("BOOLEAN", {"default": True}),
-                "zero_steps": ("INT", {"default": 1, "min": 0, "max": 100}),
-            },
-            "optional": {
-                "spatial_image": ("IMAGE", ),
-                "subject_image": ("IMAGE", ),
+                "flux_model": (model_paths, ),
+                "ae_model": (vae_paths, ),
+                "model_type": (["flux-dev", "flux-dev-fp8", "flux-schnell"], {"default": "flux-dev"}),
+                "offload": ("BOOLEAN", {"default": False}),
+                "lora_model": (["None"] + lora_paths, ),
             }
         }
-    
+
+    RETURN_TYPES = ("UNO_MODEL",)
+    RETURN_NAMES = ("uno_model",)
+    FUNCTION = "load_model"
+    CATEGORY = "UNO"
+
+    def load_model(self, flux_model, ae_model, model_type, offload, lora_model=None):
+        device = get_torch_device()
+        
+        try:
+            # 获取模型文件的完整路径
+            flux_model_path = folder_paths.get_full_path("unet", flux_model)
+            ae_model_path = folder_paths.get_full_path("vae", ae_model)
+            
+            # 获取LoRA模型路径（如果有）
+            lora_model_path = None
+            if lora_model is not None and lora_model != "None":
+                lora_model_path = folder_paths.get_full_path("loras", lora_model)
+            
+            print(f"Loading Flux model from: {flux_model_path}")
+            print(f"Loading AE model from: {ae_model_path}")
+            lora_rank = 512
+            if lora_model_path:
+                print(f"Loading LoRA model from: {lora_model_path}")
+            
+            # 创建自定义 UNO Pipeline
+            class CustomUNOPipeline(UNOPipeline):
+                def __init__(self, model_type, device, flux_path, ae_path, offload=False, 
+                            lora_rank=512, lora_path=None):
+                    self.device = device
+                    self.offload = offload
+                    self.model_type = model_type
+                    
+                    # 加载 CLIP 和 T5 编码器
+                    self.clip = custom_load_clip(self.device)
+                    self.t5 = custom_load_t5(self.device, max_length=512)
+                    
+                    # 加载自定义模型
+                    self.ae = custom_load_ae(ae_path, device="cpu" if offload else self.device, model_type=model_type)
+                    self.model = custom_load_flux_model(
+                        flux_path, 
+                        device="cpu" if offload else self.device, 
+                        model_type=model_type,
+                        offload=offload,
+                        lora_rank=lora_rank,
+                        lora_path=lora_path
+                    )
+                    
+            # 创建自定义 pipeline
+            model = CustomUNOPipeline(
+                model_type=model_type,
+                device=device,
+                flux_path=flux_model_path,
+                ae_path=ae_model_path,
+                offload=offload,
+                lora_path=lora_model_path,
+            )
+            
+            self.loaded_model = model
+            print(f"UNO model loaded successfully with custom models.")
+            return (model,)
+        except Exception as e:
+            print(f"Error loading UNO model: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
+
+
+class UNOGenerate:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "uno_model": ("UNO_MODEL",),
+                "prompt": ("STRING", {"multiline": True}),
+                "width": ("INT", {"default": 512, "min": 256, "max": 2048, "step": 16}),
+                "height": ("INT", {"default": 512, "min": 256, "max": 2048, "step": 16}),
+                "guidance": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 10.0, "step": 0.1}),
+                "num_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
+                "seed": ("INT", {"default": 3407}),
+                "pe": (["d", "h", "w", "o"], {"default": "d"}),
+            },
+            "optional": {
+                "reference_image_1": ("IMAGE",),
+                "reference_image_2": ("IMAGE",),
+                "reference_image_3": ("IMAGE",),
+                "reference_image_4": ("IMAGE",),
+            }
+        }
+
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "generate"
-    CATEGORY = "EasyControl"
+    CATEGORY = "UNO"
 
-    def generate(self, pipe, transformer, prompt, prompt_2, height, width, guidance_scale, 
-                num_inference_steps, seed, cond_size, use_zero_init, zero_steps, spatial_image=None, subject_image=None):
-        # Clear cache before generation
-        for name, attn_processor in transformer.attn_processors.items():
-            attn_processor.bank_kv.clear()
+    def generate(self, uno_model, prompt, width, height, guidance, num_steps, seed, pe, 
+                reference_image_1=None, reference_image_2=None, reference_image_3=None, reference_image_4=None):
+        # Make sure width and height are multiples of 16
+        width = (width // 16) * 16
+        height = (height // 16) * 16
         
+        # Process reference images if provided
+        ref_imgs = []
+        ref_tensors = [reference_image_1, reference_image_2, reference_image_3, reference_image_4]
+        for ref_tensor in ref_tensors:
+            if ref_tensor is not None:
+                # Convert from tensor to PIL
+                if isinstance(ref_tensor, torch.Tensor):
+                    # Handle batch of images
+                    if ref_tensor.dim() == 4:  # [batch, height, width, channels]
+                        for i in range(ref_tensor.shape[0]):
+                            img = ref_tensor[i].cpu().numpy()
+                            # Assume ComfyUI range is [-1, 1], convert to [0, 1]
+                            img = (img + 1.0) / 2.0
+                            ref_image_pil = Image.fromarray((img * 255).astype(np.uint8))
+                            # Determine reference size based on number of reference images
+                            ref_size = 512 if len([t for t in ref_tensors if t is not None]) <= 1 else 320
+                            ref_image_pil = preprocess_ref(ref_image_pil, ref_size)
+                            ref_imgs.append(ref_image_pil)
+                    else:  # [height, width, channels]
+                        img = ref_tensor.cpu().numpy()
+                        # Assume ComfyUI range is [-1, 1], convert to [0, 1]
+                        img = (img + 1.0) / 2.0
+                        ref_image_pil = Image.fromarray((img * 255).astype(np.uint8))
+                        # Determine reference size based on number of reference images
+                        ref_size = 512 if len([t for t in ref_tensors if t is not None]) <= 1 else 320
+                        ref_image_pil = preprocess_ref(ref_image_pil, ref_size)
+                        ref_imgs.append(ref_image_pil)
+                elif isinstance(ref_tensor, np.ndarray):
+                    # Assume ComfyUI range is [-1, 1], convert to [0, 1]
+                    img = (ref_tensor + 1.0) / 2.0
+                    ref_image_pil = Image.fromarray((img * 255).astype(np.uint8))
+                    # Determine reference size based on number of reference images
+                    ref_size = 512 if len([t for t in ref_tensors if t is not None]) <= 1 else 320
+                    ref_image_pil = preprocess_ref(ref_image_pil, ref_size)
+                    ref_imgs.append(ref_image_pil)
         
-        # Prepare spatial images
-        spatial_images = []
-        print("spatial_image")
-        print(spatial_image)
-        
-        if spatial_image is not None:
-            # Convert from tensor or numpy to PIL
-            if isinstance(spatial_image, torch.Tensor):
-                # Handle single image or batch
-                if spatial_image.dim() == 4:  # [batch, height, width, channels]
-                    for i in range(spatial_image.shape[0]):
-                        img = spatial_image[i].cpu().numpy()
-                        spatial_image_pil = Image.fromarray((img * 255).astype(np.uint8))
-                        spatial_images.append(spatial_image_pil)
-                else:  # [height, width, channels]
-                    img = spatial_image.cpu().numpy()
-                    spatial_image_pil = Image.fromarray((img * 255).astype(np.uint8))
-                    spatial_images.append(spatial_image_pil)
-            elif isinstance(spatial_image, np.ndarray):
-                spatial_image_pil = Image.fromarray((spatial_image * 255).astype(np.uint8))
-                spatial_images.append(spatial_image_pil)
-        
-        # Prepare subject images
-        subject_images = []
-        if subject_image is not None:
-            # Convert from tensor or numpy to PIL
-            if isinstance(subject_image, torch.Tensor):
-                # Handle single image or batch
-                if subject_image.dim() == 4:  # [batch, height, width, channels]
-                    for i in range(subject_image.shape[0]):
-                        img = subject_image[i].cpu().numpy()
-                        subject_image_pil = Image.fromarray((img * 255).astype(np.uint8))
-                        subject_images.append(subject_image_pil)
-                else:  # [height, width, channels]
-                    img = subject_image.cpu().numpy()
-                    subject_image_pil = Image.fromarray((img * 255).astype(np.uint8))
-                    subject_images.append(subject_image_pil)
-            elif isinstance(subject_image, np.ndarray):
-                subject_image_pil = Image.fromarray((subject_image * 255).astype(np.uint8))
-                subject_images.append(subject_image_pil)
-        
-        # Set prompt_2 to None if empty
-        if not prompt_2:
-            prompt_2 = None
+        try:
+            # Generate image
+            output_img = uno_model(
+                prompt=prompt,
+                width=width,
+                height=height,
+                guidance=guidance,
+                num_steps=num_steps,
+                seed=seed,
+                ref_imgs=ref_imgs,
+                pe=pe
+            )
+            
+            # Save the generated image
+            output_filename = f"uno_{seed}_{prompt[:20].replace(' ', '_')}.png"
+            output_path = os.path.join(self.output_dir, output_filename)
+            
+            # Convert to ComfyUI-compatible tensor
+            if hasattr(output_img, 'images') and len(output_img.images) > 0:
+                # Handle FluxPipelineOutput
+                output_img.images[0].save(output_path)
+                print(f"Saved UNO generated image to {output_path}")
+                image = np.array(output_img.images[0]) / 255.0  # Convert to [0, 1]
+            else:
+                # Handle PIL Image
+                output_img.save(output_path)
+                print(f"Saved UNO generated image to {output_path}")
+                image = np.array(output_img) / 255.0  # Convert to [0, 1]
+            
+            # Convert numpy array to torch.Tensor
+            image = torch.from_numpy(image).float()
+            
+            # Make sure it's in ComfyUI format [batch, height, width, channels]
+            if image.dim() == 3:  # [height, width, channels]
+                image = image.unsqueeze(0)  # Add batch dimension to make it [1, height, width, channels]
+            
+            # Scale to [-1, 1] range as expected by ComfyUI
+            image = image * 2.0 - 1.0
+            
+            return (image,)
+        except Exception as e:
+            print(f"Error generating image with UNO: {e}")
+            raise e
 
-        print("spatial_images")
-        print(spatial_images)
 
-        print("subject_images")
-        print(subject_images)
-        
-        # Generate image
-        output = pipe(
-            prompt=prompt,
-            prompt_2=prompt_2,
-            height=height,
-            width=width,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
-            max_sequence_length=512,
-            generator=torch.Generator("cpu").manual_seed(seed),
-            spatial_images=spatial_images,
-            subject_images=subject_images,
-            cond_size=cond_size,
-            use_zero_init=use_zero_init,
-            zero_steps=int(zero_steps)
-        )
-        
-        # Convert PIL image to numpy array, then to torch.Tensor
-        if isinstance(output, FluxPipelineOutput):
-            image = np.array(output.images[0]) / 255.0
-        else:
-            image = np.array(output[0]) / 255.0
-        
-        # Convert numpy array to torch.Tensor
-        image = torch.from_numpy(image).float()
-        
-        # Add batch dimension to make it [batch, height, width, channels]
-        if image.dim() == 3:  # [height, width, channels]
-            image = image.unsqueeze(0)  # Add batch dimension to make it [1, height, width, channels]
-        
-        # Clear cache after generation
-        for name, attn_processor in transformer.attn_processors.items():
-            attn_processor.bank_kv.clear()
-        
-        return (image,)
+# Register our nodes to be used in ComfyUI
+NODE_CLASS_MAPPINGS = {
+    "UNOModelLoader": UNOModelLoader,
+    "UNOGenerate": UNOGenerate,
+}
 
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "UNOModelLoader": "UNO Model Loader",
+    "UNOGenerate": "UNO Generate",
+}

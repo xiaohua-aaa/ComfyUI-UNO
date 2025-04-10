@@ -1,10 +1,7 @@
-diffusers==0.32.2
-easydict
+accelerate
+deepspeed
 einops
-peft
-pillow
-protobuf
-requests
-safetensors
-sentencepiece
 transformers
+huggingface-hub
+diffusers
+sentencepiece

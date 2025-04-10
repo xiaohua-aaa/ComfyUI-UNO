@@ -1,20 +1,15 @@
-
-from .nodes.comfy_nodes import EasyControlLoadFlux, EasyControlLoadLora, EasyControlLoadMultiLora, EasyControlGenerate
+from .nodes.comfy_nodes import UNOModelLoader, UNOGenerate
 
 
 # 注册节点
 NODE_CLASS_MAPPINGS = {
-    "EasyControlLoadFlux": EasyControlLoadFlux,
-    "EasyControlLoadLora": EasyControlLoadLora,
-    "EasyControlLoadMultiLora": EasyControlLoadMultiLora,
-    "EasyControlGenerate": EasyControlGenerate,
+    "UNOModelLoader": UNOModelLoader,
+    "UNOGenerate": UNOGenerate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "EasyControlLoadFlux": "Load EasyControl Flux Model",
-    "EasyControlLoadLora": "Load EasyControl Lora",
-    "EasyControlLoadMultiLora": "Load Multiple EasyControl Loras",
-    "EasyControlGenerate": "EasyControl Generate",
+    "UNOModelLoader": "UNO Model Loader",
+    "UNOGenerate": "UNO Generate",
 } 
 WEB_DIRECTORY = "./web"
 
