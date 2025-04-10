@@ -255,6 +255,7 @@ class UNOPipeline:
             (width // 8) * (height // 8) // (16 * 16),
             shift=True,
         )
+        print("encode")
         if self.offload:
             self.ae.encoder = self.ae.encoder.to(self.device)
         x_1_refs = [
@@ -264,7 +265,7 @@ class UNOPipeline:
             ).to(torch.bfloat16)
             for ref_img in ref_imgs
         ]
-
+        print("clip")
         if self.offload:
             self.ae.encoder = self.offload_model_to_cpu(self.ae.encoder)
             self.t5, self.clip = self.t5.to(self.device), self.clip.to(self.device)
@@ -273,7 +274,7 @@ class UNOPipeline:
             img=x,
             prompt=prompt, ref_imgs=x_1_refs, pe=pe
         )
-
+        print("unet")
         if self.offload:
             self.offload_model_to_cpu(self.t5, self.clip)
             self.model = self.model.to(self.device)
@@ -284,7 +285,7 @@ class UNOPipeline:
             timesteps=timesteps,
             guidance=guidance,
         )
-
+        print("decode")
         if self.offload:
             self.offload_model_to_cpu(self.model)
             self.ae.decoder.to(x.device)
