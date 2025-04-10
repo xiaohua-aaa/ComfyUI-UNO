@@ -269,6 +269,7 @@ class UNOPipeline:
         ]
         print("clip")
         print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
+        print(f"t5: {self.t5 is None}")
         if self.offload:
             self.ae.encoder = self.offload_model_to_cpu(self.ae.encoder)
             self.t5, self.clip = self.t5.to(self.device), self.clip.to(self.device)
@@ -278,6 +279,7 @@ class UNOPipeline:
             prompt=prompt, ref_imgs=x_1_refs, pe=pe
         )
         print("unet")
+        print(f"offload: {self.offload}")
         print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
         if self.offload:
             print("offload t5 & clip")
