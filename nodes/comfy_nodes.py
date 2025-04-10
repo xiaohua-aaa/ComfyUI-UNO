@@ -4,6 +4,9 @@ import numpy as np
 import re
 from PIL import Image
 from typing import Literal
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from comfy.model_management import get_torch_device
 import folder_paths
