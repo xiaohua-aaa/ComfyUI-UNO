@@ -60,11 +60,6 @@ def custom_load_flux_model(model_path, device, model_type="flux-dev", lora_rank=
     with torch.device("meta" if model_path is not None else device):
         model = Flux(params)
     
-    if model_type == "flux-dev-fp8":
-        from optimum.quanto import requantize
-        requantize(model, device=device)
-
-    
     # 如果有lora，设置 LoRA 层
     if os.path.exists(lora_path):
         print(f"Using only_lora mode with rank: {lora_rank}")
