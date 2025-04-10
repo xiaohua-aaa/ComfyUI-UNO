@@ -1,7 +1,4 @@
-accelerate
-deepspeed
 einops
 transformers
 huggingface-hub
 diffusers
-sentencepiece
