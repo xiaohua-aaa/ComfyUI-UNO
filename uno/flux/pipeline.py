@@ -256,6 +256,8 @@ class UNOPipeline:
             shift=True,
         )
         print("encode")
+        #输出当前GPU VRAM
+        print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
         if self.offload:
             self.ae.encoder = self.ae.encoder.to(self.device)
         x_1_refs = [
@@ -266,6 +268,7 @@ class UNOPipeline:
             for ref_img in ref_imgs
         ]
         print("clip")
+        print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
         if self.offload:
             self.ae.encoder = self.offload_model_to_cpu(self.ae.encoder)
             self.t5, self.clip = self.t5.to(self.device), self.clip.to(self.device)
@@ -275,8 +278,13 @@ class UNOPipeline:
             prompt=prompt, ref_imgs=x_1_refs, pe=pe
         )
         print("unet")
+        print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
         if self.offload:
+            print("offload t5 & clip")
+            print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
             self.offload_model_to_cpu(self.t5, self.clip)
+            print("load unet")
+            print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
             self.model = self.model.to(self.device)
 
         x = denoise(
@@ -286,6 +294,7 @@ class UNOPipeline:
             guidance=guidance,
         )
         print("decode")
+        print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
         if self.offload:
             self.offload_model_to_cpu(self.model)
             self.ae.decoder.to(x.device)
