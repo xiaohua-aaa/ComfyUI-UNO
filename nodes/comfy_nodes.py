@@ -14,7 +14,7 @@ import folder_paths
 from uno.flux.model import Flux
 from uno.flux.modules.conditioner import HFEmbedder
 from uno.flux.pipeline import UNOPipeline, preprocess_ref
-from uno.flux.util import configs, set_lora
+from uno.flux.util import configs, print_load_warning, set_lora
 from uno.flux.modules.layers import DoubleStreamBlockLoraProcessor, SingleStreamBlockLoraProcessor, DoubleStreamBlockProcessor, SingleStreamBlockProcessor
 from safetensors.torch import load_file as load_sft
 
@@ -44,6 +44,10 @@ def custom_load_flux_model(model_path, device, use_fp8, lora_rank=512, lora_path
     # 加载模型权重
     if model_path is not None:
         print(f"Loading Flux model from {model_path}")
+        print("Loading lora")
+        lora_sd = load_sft(lora_path, device=str(device)) if lora_path.endswith("safetensors")\
+            else torch.load(lora_path, map_location='cpu')
+        print("Loading main checkpoint")
         if model_path.endswith('safetensors'):
             if use_fp8:
                 print(
@@ -61,23 +65,15 @@ def custom_load_flux_model(model_path, device, use_fp8, lora_rank=512, lora_path
             sd.update(lora_sd)
             missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
         else:
-            sd = load_model(model_path, device=str(device))
-            # 检查是否有单独的 LoRA 文件
-            if os.path.exists(lora_path):
-                print(f"Found LoRA weights at {lora_path}, loading...")
-                if lora_path.endswith('safetensors'):
-                    lora_sd = load_sft(lora_path, device=str(device))
-                else:
-                    lora_sd = torch.load(lora_path, map_location='cpu')
-                # 合并 LoRA 权重
-                sd.update(lora_sd)
-            
+            dit_state = torch.load(model_path, map_location='cpu')
+            sd = {}
+            for k in dit_state.keys():
+                sd[k.replace('module.','')] = dit_state[k]
+            sd.update(lora_sd)
             missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
-            if len(missing) > 0:
-                print(f"Missing keys: {len(missing)}")
-            if len(unexpected) > 0:
-                print(f"Unexpected keys: {len(unexpected)}")
-        
+            model.to(str(device))
+        print_load_warning(missing, unexpected)
+
     return model
 
 def custom_load_ae(ae_path, device):
