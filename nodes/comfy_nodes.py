@@ -16,6 +16,7 @@ from uno.flux.modules.conditioner import HFEmbedder
 from uno.flux.pipeline import UNOPipeline, preprocess_ref
 from uno.flux.util import configs, set_lora
 from uno.flux.modules.layers import DoubleStreamBlockLoraProcessor, SingleStreamBlockLoraProcessor, DoubleStreamBlockProcessor, SingleStreamBlockProcessor
+from safetensors.torch import load_file as load_sft
 
 
 # 添加自定义加载模型的函数
@@ -65,7 +66,6 @@ def custom_load_flux_model(model_path, device, use_fp8, lora_rank=512, lora_path
             if os.path.exists(lora_path):
                 print(f"Found LoRA weights at {lora_path}, loading...")
                 if lora_path.endswith('safetensors'):
-                    from safetensors.torch import load_file as load_sft
                     lora_sd = load_sft(lora_path, device=str(device))
                 else:
                     lora_sd = torch.load(lora_path, map_location='cpu')
@@ -98,7 +98,6 @@ def custom_load_ae(ae_path, device):
     if ae_path is not None:
         print(f"Loading AutoEncoder from {ae_path}")
         if ae_path.endswith('safetensors'):
-            from safetensors.torch import load_file as load_sft
             sd = load_sft(ae_path, device=str(device))
         else:
             sd = torch.load(ae_path, map_location=str(device))
