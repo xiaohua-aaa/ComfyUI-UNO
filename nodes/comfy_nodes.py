@@ -111,7 +111,7 @@ def custom_load_t5(device: str | torch.device = "cuda", max_length: int = 512) -
     # max length 64, 128, 256 and 512 should work (if your sequence is short enough)
     version = "xlabs-ai/xflux_text_encoders"
     cache_dir = folder_paths.get_folder_paths("clip")[0]
-    return HFEmbedder(version, max_length=max_length, torch_dtype=torch.bfloat16).to(device)
+    return HFEmbedder(version, max_length=max_length, torch_dtype=torch.bfloat16, cache_dir=cache_dir).to(device)
 
 def custom_load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
     version = "openai/clip-vit-large-patch14"
