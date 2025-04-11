@@ -80,7 +80,7 @@ def custom_load_flux_model(model_path, device, use_fp8, lora_rank=512, lora_path
         
     return model
 
-def custom_load_ae(ae_path, device, model_type="flux-dev"):
+def custom_load_ae(ae_path, device):
     """
     从指定路径加载自编码器
     """
@@ -88,7 +88,7 @@ def custom_load_ae(ae_path, device, model_type="flux-dev"):
     from uno.flux.util import load_model
     
     # 获取对应模型类型的自编码器参数
-    ae_params = configs[model_type].ae_params
+    ae_params = configs["flux-dev"].ae_params
     
     # 初始化自编码器
     with torch.device("meta" if ae_path is not None else device):
@@ -187,7 +187,7 @@ class UNOModelLoader:
                     self.t5 = custom_load_t5(device="cpu" if offload else self.device, max_length=512)
                     
                     # 加载自定义模型
-                    self.ae = custom_load_ae(ae_path, device="cpu" if offload else self.device, model_type=model_type)
+                    self.ae = custom_load_ae(ae_path, device="cpu" if offload else self.device)
                     self.model = custom_load_flux_model(
                         flux_path, 
                         device="cpu" if offload else self.device, 
