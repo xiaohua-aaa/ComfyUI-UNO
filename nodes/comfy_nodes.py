@@ -19,15 +19,17 @@ from uno.flux.modules.layers import DoubleStreamBlockLoraProcessor, SingleStream
 
 
 # 添加自定义加载模型的函数
-def custom_load_flux_model(model_path, device, model_type="flux-dev", lora_rank=512, lora_path=None):
+def custom_load_flux_model(model_path, device, use_fp8, lora_rank=512, lora_path=None):
     """
     从指定路径加载 Flux 模型
     """
     from uno.flux.model import Flux
     from uno.flux.util import load_model
     
-    # 获取对应模型类型的参数
-    params = configs[model_type].params
+    if use_fp8:
+        params = configs["flux-dev-fp8"].params
+    else:
+        params = configs["flux-dev"].params
     
     # 初始化模型
     with torch.device("meta" if model_path is not None else device):
@@ -42,32 +44,40 @@ def custom_load_flux_model(model_path, device, model_type="flux-dev", lora_rank=
     if model_path is not None:
         print(f"Loading Flux model from {model_path}")
         if model_path.endswith('safetensors'):
-            from safetensors.torch import load_file as load_sft
-            sd = load_sft(model_path, device=str(device))
+            if use_fp8:
+                print(
+                    "####\n"
+                    "We are in fp8 mode right now, since the fp8 checkpoint of XLabs-AI/flux-dev-fp8 seems broken\n"
+                    "we convert the fp8 checkpoint on flight from bf16 checkpoint\n"
+                    "If your storage is constrained"
+                    "you can save the fp8 checkpoint and replace the bf16 checkpoint by yourself\n"
+                )
+                sd = load_sft(model_path, device="cpu")
+                sd = {k: v.to(dtype=torch.float8_e4m3fn, device=device) for k, v in sd.items()}
+            else:
+                sd = load_sft(model_path, device=str(device))
+            
+            sd.update(lora_sd)
+            missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
         else:
             sd = load_model(model_path, device=str(device))
+            # 检查是否有单独的 LoRA 文件
+            if os.path.exists(lora_path):
+                print(f"Found LoRA weights at {lora_path}, loading...")
+                if lora_path.endswith('safetensors'):
+                    from safetensors.torch import load_file as load_sft
+                    lora_sd = load_sft(lora_path, device=str(device))
+                else:
+                    lora_sd = torch.load(lora_path, map_location='cpu')
+                # 合并 LoRA 权重
+                sd.update(lora_sd)
+            
+            missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
+            if len(missing) > 0:
+                print(f"Missing keys: {len(missing)}")
+            if len(unexpected) > 0:
+                print(f"Unexpected keys: {len(unexpected)}")
         
-        # 检查是否有单独的 LoRA 文件
-        if os.path.exists(lora_path):
-            print(f"Found LoRA weights at {lora_path}, loading...")
-            if lora_path.endswith('safetensors'):
-                from safetensors.torch import load_file as load_sft
-                lora_sd = load_sft(lora_path, device=str(device))
-            else:
-                lora_sd = torch.load(lora_path, map_location='cpu')
-            # 合并 LoRA 权重
-            sd.update(lora_sd)
-        
-        missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
-        if len(missing) > 0:
-            print(f"Missing keys: {len(missing)}")
-        if len(unexpected) > 0:
-            print(f"Unexpected keys: {len(unexpected)}")
-        
-        if model_type == "flux-dev-fp8":
-            model = model.to(str(device))
-        else:
-            model = model.to(str(device)).to(torch.bfloat16)
     return model
 
 def custom_load_ae(ae_path, device, model_type="flux-dev"):
@@ -134,7 +144,7 @@ class UNOModelLoader:
             "required": {
                 "flux_model": (model_paths, ),
                 "ae_model": (vae_paths, ),
-                "model_type": (["flux-dev", "flux-dev-fp8", "flux-schnell"], {"default": "flux-dev"}),
+                "use_fp8": ("BOOLEAN", {"default": False}),
                 "offload": ("BOOLEAN", {"default": False}),
                 "lora_model": (["None"] + lora_paths, ),
             }
@@ -145,7 +155,7 @@ class UNOModelLoader:
     FUNCTION = "load_model"
     CATEGORY = "UNO"
 
-    def load_model(self, flux_model, ae_model, model_type, offload, lora_model=None):
+    def load_model(self, flux_model, ae_model, use_fp8, offload, lora_model=None):
         device = get_torch_device()
         
         try:
@@ -166,11 +176,11 @@ class UNOModelLoader:
             
             # 创建自定义 UNO Pipeline
             class CustomUNOPipeline(UNOPipeline):
-                def __init__(self, model_type, device, flux_path, ae_path, offload=False, 
+                def __init__(self, use_fp8, device, flux_path, ae_path, offload=False, 
                             lora_rank=512, lora_path=None):
                     self.device = device
                     self.offload = offload
-                    self.model_type = model_type
+                    self.model_type = "flux-dev-fp8" if use_fp8 else "flux-dev"
                     
                     # 加载 CLIP 和 T5 编码器
                     self.clip = custom_load_clip(device="cpu" if offload else self.device)
@@ -181,14 +191,14 @@ class UNOModelLoader:
                     self.model = custom_load_flux_model(
                         flux_path, 
                         device="cpu" if offload else self.device, 
-                        model_type=model_type,
+                        use_fp8=use_fp8,
                         lora_rank=lora_rank,
                         lora_path=lora_path
                     )
                     
             # 创建自定义 pipeline
             model = CustomUNOPipeline(
-                model_type=model_type,
+                use_fp8=use_fp8,
                 device=device,
                 flux_path=flux_model_path,
                 ae_path=ae_model_path,
