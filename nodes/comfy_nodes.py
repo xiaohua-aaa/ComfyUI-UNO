@@ -176,7 +176,7 @@ class UNOModelLoader:
                     self.device = device
                     self.offload = offload
                     self.model_type = "flux-dev-fp8" if use_fp8 else "flux-dev"
-                    
+                    self.use_fp8 = use_fp8
                     # 加载 CLIP 和 T5 编码器
                     self.clip = custom_load_clip(device="cpu" if offload else self.device)
                     self.t5 = custom_load_t5(device="cpu" if offload else self.device, max_length=512)
