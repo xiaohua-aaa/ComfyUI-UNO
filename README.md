@@ -11,6 +11,22 @@ https://github.com/bytedance/UNO comfyui
 FP8 support
 open offload and fp8 support 24GB VRAM
 
+model url and path
+flux model: https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/flux1-dev.safetensors  to models/unet
+
+
+vae model: https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/ae.safetensors
+to models/vae
+
+t5 models: xlabs-ai/xflux_text_encoders
+to models/clip
+
+clip models: openai/clip-vit-large-patch14
+to models/clip
+
+lora : https://huggingface.co/bytedance-research/UNO/blob/main/dit_lora.safetensors
+to models/loras
+
 flux model in unet directory and lora in lora directory
 
 clip and t5 will autodownload
