@@ -37,12 +37,13 @@ clip and t5 will autodownload
 
 ## Online Run:
 
-online workflow run: [Flux UNO Mutil image reference](https://www.comfyonline.app/explore/0acb4945-aac0-430c-b693-435ad501585c)
+online workflow run: [Flux UNO Mutil image reference Workflow](https://www.comfyonline.app/explore/0acb4945-aac0-430c-b693-435ad501585c)
+
+app run: [Flux UNO Mutil image reference](https://www.comfyonline.app/explore/app/flux-uno-mutil-image-reference)
 
 https://www.comfyonline.app comfyonline is comfyui cloud website, Run ComfyUI workflows online and deploy APIs with one click
 
 Provides an online environment for running your ComfyUI workflows, with the ability to generate APIs for easy AI application development.
-
 
 ## Paper Analysis
 
